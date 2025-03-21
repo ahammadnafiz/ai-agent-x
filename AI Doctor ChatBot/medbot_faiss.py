@@ -3,8 +3,7 @@ MedBot: A medical chatbot system using document retrieval and LLM-based question
 
 This module implements a document retrieval and question answering system specialized for medical
 information. It loads PDF documents, processes them, creates embeddings, and stores them in
-a FAISS vector database for efficient retrieval. Enhanced with LangChain memory components for
-better context retention.
+a FAISS vector database for efficient retrieval.
 """
 
 import os
@@ -22,10 +21,6 @@ from langchain_core.prompts import ChatPromptTemplate, HumanMessagePromptTemplat
 from langchain_groq import ChatGroq
 from langchain.chains import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
-# Memory imports
-from langchain.memory import ConversationBufferMemory, ConversationSummaryMemory, ConversationSummaryBufferMemory
-from langchain.memory.chat_message_histories import RedisChatMessageHistory
-from langchain_core.runnables.history import RunnableWithMessageHistory
 
 
 class ConfigManager:
@@ -42,7 +37,6 @@ class ConfigManager:
         
         # Store API keys
         self.groq_api_key = os.environ.get('GROQ_API_KEY')
-        self.redis_url = os.environ.get('REDIS_URL', 'redis://localhost:6379')
         
         # Set environment variables for dependent libraries
         os.environ["GROQ_API_KEY"] = self.groq_api_key
@@ -184,117 +178,17 @@ class FAISSManager:
         )
 
 
-class MemoryManager:
-    """Manages different types of conversation memory."""
-    
-    def __init__(self, memory_type: str = "buffer", redis_url: Optional[str] = None, 
-                 llm = None, max_token_limit: int = 2000):
-        """
-        Initialize memory manager with specified memory type.
-        
-        Args:
-            memory_type: Type of memory to use ("buffer", "summary", "summary_buffer", "redis")
-            redis_url: URL for Redis connection (required for redis memory type)
-            llm: Language model for summarization (required for summary memory types)
-            max_token_limit: Maximum number of tokens to keep in memory
-        """
-        self.memory_type = memory_type
-        self.redis_url = redis_url
-        self.llm = llm
-        self.max_token_limit = max_token_limit
-        self.memory = None
-    
-    def create_memory(self, session_id: str = "default") -> Any:
-        """
-        Create and return the appropriate memory object.
-        
-        Args:
-            session_id: Unique identifier for the chat session
-            
-        Returns:
-            Memory object based on the specified type
-        """
-        if self.memory_type == "buffer":
-            self.memory = ConversationBufferMemory(
-                return_messages=True,
-                memory_key="chat_history",
-                output_key="answer"
-            )
-        
-        elif self.memory_type == "summary":
-            if not self.llm:
-                raise ValueError("LLM is required for summary memory")
-                
-            self.memory = ConversationSummaryMemory(
-                llm=self.llm,
-                return_messages=True,
-                memory_key="chat_history",
-                output_key="answer"
-            )
-            
-        elif self.memory_type == "summary_buffer":
-            if not self.llm:
-                raise ValueError("LLM is required for summary buffer memory")
-                
-            self.memory = ConversationSummaryBufferMemory(
-                llm=self.llm,
-                return_messages=True,
-                memory_key="chat_history",
-                output_key="answer",
-                max_token_limit=self.max_token_limit
-            )
-            
-        elif self.memory_type == "redis":
-            if not self.redis_url:
-                raise ValueError("Redis URL is required for redis memory")
-                
-            message_history = RedisChatMessageHistory(
-                session_id=session_id,
-                url=self.redis_url
-            )
-            
-            self.memory = ConversationBufferMemory(
-                chat_memory=message_history,
-                return_messages=True,
-                memory_key="chat_history",
-                output_key="answer"
-            )
-        
-        else:
-            raise ValueError(f"Unsupported memory type: {self.memory_type}")
-            
-        return self.memory
-        
-    def get_memory_dict(self) -> Dict[str, Any]:
-        """
-        Get memory configuration as a dictionary.
-        
-        Returns:
-            Dictionary with memory configuration
-        """
-        memory_info = {
-            "type": self.memory_type,
-            "max_token_limit": self.max_token_limit if hasattr(self, "max_token_limit") else None
-        }
-        return memory_info
-
-
 class DocChat:
-    """Handles document-based chat interactions with enhanced memory."""
+    """Handles document-based chat interactions."""
     
-    def __init__(self, groq_api_key: str, retriever, model_name: str = "qwen-qwq-32b", 
-                 memory_type: str = "summary_buffer", redis_url: Optional[str] = None,
-                 session_id: str = "default"):
+    def __init__(self, groq_api_key: str, retriever, model_name: str = "qwen-qwq-32b"):
         """
-        Initialize DocChat with document retriever, model parameters, and memory.
+        Initialize DocChat with document retriever and model parameters.
         
         Args:
             groq_api_key: API key for Groq
             retriever: Document retriever for fetching relevant content
             model_name: Model name to use
-            memory_type: Type of memory to use
-            redis_url: URL for Redis connection (required for redis memory)
-            session_id: Unique identifier for the chat session
         """
         self.retriever = retriever
         self.llm = None
@@ -302,18 +196,6 @@ class DocChat:
         self.chat_history = []
         self.prompts = self._create_prompts()
         self.initialize_groq_components(groq_api_key, model_name)
-        
-        # Initialize memory
-        self.memory_manager = MemoryManager(
-            memory_type=memory_type,
-            redis_url=redis_url,
-            llm=self.llm
-        )
-        self.memory = self.memory_manager.create_memory(session_id)
-        self.session_id = session_id
-        
-        # Initialize enhanced QA chain with memory
-        self._initialize_qa_chain_with_memory()
 
     def _create_prompts(self) -> Dict:
         """
@@ -344,13 +226,10 @@ RESPONSE FORMAT:
 - Include brief mention of relevant medical guidelines or consensus when applicable
 - End with a reminder about consulting healthcare professionals when appropriate
 
-CONVERSATION HISTORY:
-{chat_history}
-
 DOCUMENT CONTEXT BELOW:
 {context}
 
-Remember: Base your responses on the document context provided, while maintaining continuity with the conversation history. If the context doesn't contain relevant information, acknowledge this limitation.
+Remember: Base your responses on the document context provided. If the context doesn't contain relevant information, acknowledge this limitation.
 """
 
         # Human template focusing on the question
@@ -424,13 +303,14 @@ DETAILED ANALYSIS REQUIREMENTS:
                 temperature=0.2,  # Lower temperature for more consistent medical responses
                 max_tokens=2048    # Ensure sufficient tokens for detailed answers
             )
+            self._initialize_qa_chain()
         except Exception as e:
             raise Exception(f"Failed to initialize Groq components: {str(e)}")
 
-    def _initialize_qa_chain_with_memory(self) -> None:
-        """Initialize document-based retrieval and answering chain with memory support."""
+    def _initialize_qa_chain(self) -> None:
+        """Initialize document-based retrieval and answering chain."""
         try:
-            # Create the question answering chain with memory integration
+            # Create the question answering chain with the general prompt by default
             question_answer_chain = create_stuff_documents_chain(
                 self.llm, 
                 self.prompts["general"],
@@ -438,25 +318,13 @@ DETAILED ANALYSIS REQUIREMENTS:
             )
             
             # Create the retrieval chain
-            retrieval_chain = create_retrieval_chain(
-                self.retriever, question_answer_chain
-            )
-            
-            # Wrap the chain with message history capability
-            self.qa_chain = RunnableWithMessageHistory(
-                retrieval_chain,
-                lambda session_id: self.memory,
-                input_messages_key="input",
-                history_messages_key="chat_history",
-                output_messages_key="answer"
-            )
-            
+            self.qa_chain = create_retrieval_chain(self.retriever, question_answer_chain)
         except Exception as e:
-            raise Exception(f"Failed to initialize QA chain with memory: {str(e)}")
+            raise Exception(f"Failed to initialize QA chain: {str(e)}")
 
     def query(self, question: str, query_type: str = "general") -> Dict:
         """
-        Execute chat query with memory integration.
+        Execute chat query.
         
         Args:
             question: User question
@@ -485,68 +353,81 @@ DETAILED ANALYSIS REQUIREMENTS:
                 self.retriever, specialized_qa_chain
             )
             
-            # Wrap the specialized chain with message history capability
-            specialized_chain_with_memory = RunnableWithMessageHistory(
-                specialized_retrieval_chain,
-                lambda session_id: self.memory,
-                input_messages_key="input",
-                history_messages_key="chat_history",
-                output_messages_key="answer"
-            )
-            
-            # Execute the query with memory integration
-            response = specialized_chain_with_memory.invoke(
-                {"input": question},
-                config={"configurable": {"session_id": self.session_id}}
-            )
+            # Execute the query
+            response = specialized_retrieval_chain.invoke({
+                "input": question,
+                "chat_history": self.get_chat_history()
+            })
             
             # Add metadata to the response
             response["query_type"] = query_type
             response["timestamp"] = datetime.now().isoformat()
             
+            # Update chat history
+            self._update_chat_history(question, response["answer"])
             return response
         except Exception as e:
             error_msg = f"Error executing query: {str(e)}"
             print(error_msg)
             return {"answer": error_msg, "error": True, "query_type": query_type}
 
-    def get_memory_contents(self) -> Dict:
+    def get_chat_history(self) -> List[Tuple[str, str]]:
         """
-        Get the current contents of the memory.
+        Get formatted chat history for LangChain.
         
         Returns:
-            Dict containing memory variables
+            List of (human_message, ai_message) tuples
         """
-        return self.memory.load_memory_variables({})
+        formatted_history = []
+        
+        # Create pairs of human and AI messages
+        for i in range(0, len(self.chat_history) - 1, 2):
+            if i + 1 < len(self.chat_history):
+                if isinstance(self.chat_history[i], HumanMessage) and isinstance(self.chat_history[i+1], AIMessage):
+                    formatted_history.append((
+                        self.chat_history[i].content, 
+                        self.chat_history[i+1].content
+                    ))
+                
+        return formatted_history
 
-    def reset_memory(self) -> None:
-        """Reset the memory to clear conversation history."""
-        self.memory.clear()
-
-    def add_context(self, context: str, role: str = "system") -> None:
+    def _update_chat_history(self, question: str, answer: str) -> None:
         """
-        Add additional context to memory.
+        Update conversation history.
+        
+        Args:
+            question: Human question
+            answer: AI answer
+        """
+        self.chat_history.extend([
+            HumanMessage(content=question),
+            AIMessage(content=answer)
+        ])
+
+    def reset_chat_history(self) -> None:
+        """Reset the chat history."""
+        self.chat_history = []
+
+    def add_context(self, context: str, context_type: str = "system") -> None:
+        """
+        Add additional context to the DocChat.
         
         Args:
             context: Additional context to consider
-            role: Role of the message (system, human, ai)
+            context_type: Type of context (system, human, ai)
         """
-        # Convert role to message type
-        if role == "system":
-            message = SystemMessage(content=context)
-        elif role == "human":
-            message = HumanMessage(content=context)
-        elif role == "ai":
-            message = AIMessage(content=context)
+        if context_type == "system":
+            self.chat_history.append(SystemMessage(content=context))
+        elif context_type == "human":
+            self.chat_history.append(HumanMessage(content=context))
+        elif context_type == "ai":
+            self.chat_history.append(AIMessage(content=context))
         else:
-            raise ValueError(f"Invalid role: {role}. Use 'system', 'human', or 'ai'.")
-        
-        # Add message to memory
-        self.memory.chat_memory.add_message(message)
+            raise ValueError(f"Invalid context type: {context_type}. Use 'system', 'human', or 'ai'.")
 
 
 class MedBotApp:
-    """Main application class for MedBot with enhanced memory capabilities."""
+    """Main application class for MedBot."""
     
     def __init__(self, data_dir: str = "Data/"):
         """
@@ -562,16 +443,13 @@ class MedBotApp:
         self.faiss_manager = None
         self.doc_chat = None
     
-    def setup(self, model_name: str = "qwen-qwq-32b", create_new_index: bool = False,
-              memory_type: str = "summary_buffer", session_id: str = "default") -> None:
+    def setup(self, model_name: str = "qwen-qwq-32b", create_new_index: bool = False) -> None:
         """
-        Set up the MedBot application with memory support.
+        Set up the MedBot application.
         
         Args:
             model_name: Model name to use for Groq
             create_new_index: Whether to create a new FAISS index
-            memory_type: Type of memory to use
-            session_id: Unique identifier for the chat session
         """
         # Load and process documents
         documents = self.doc_processor.load_pdf_documents(self.data_dir)
@@ -594,24 +472,16 @@ class MedBotApp:
         # Create retriever
         retriever = self.faiss_manager.get_retriever()
         
-        # Set up DocChat with memory
-        self.doc_chat = self.create_doc_chat(
-            retriever, 
-            model_name, 
-            memory_type, 
-            session_id
-        )
+        # Set up DocChat
+        self.doc_chat = self.create_doc_chat(retriever, model_name)
     
-    def create_doc_chat(self, retriever, model_name: str = "qwen-qwq-32b",
-                         memory_type: str = "summary_buffer", session_id: str = "default") -> Optional[DocChat]:
+    def create_doc_chat(self, retriever, model_name: str = "qwen-qwq-32b") -> Optional[DocChat]:
         """
-        Create and return a DocChat instance with memory integration.
+        Create and return a DocChat instance with error handling.
         
         Args:
             retriever: Document retriever
             model_name: Model name to use
-            memory_type: Type of memory to use
-            session_id: Unique identifier for the chat session
             
         Returns:
             DocChat instance or None if initialization fails
@@ -620,10 +490,7 @@ class MedBotApp:
             doc_chat = DocChat(
                 groq_api_key=self.config.groq_api_key,
                 retriever=retriever,
-                model_name=model_name,
-                memory_type=memory_type,
-                redis_url=self.config.redis_url,
-                session_id=session_id
+                model_name=model_name
             )
             return doc_chat
         except Exception as e:
@@ -645,30 +512,3 @@ class MedBotApp:
             raise ValueError("DocChat not initialized. Set up the application first.")
         
         return self.doc_chat.query(question, query_type)
-    
-    def get_memory_status(self) -> Dict:
-        """
-        Get information about the current memory status.
-        
-        Returns:
-            Dict with memory information
-        """
-        if not self.doc_chat:
-            raise ValueError("DocChat not initialized. Set up the application first.")
-            
-        memory_info = self.doc_chat.memory_manager.get_memory_dict()
-        memory_contents = self.doc_chat.get_memory_contents()
-        
-        return {
-            "configuration": memory_info,
-            "contents": memory_contents,
-            "session_id": self.doc_chat.session_id
-        }
-    
-    def reset_memory(self) -> None:
-        """Reset the current memory."""
-        if not self.doc_chat:
-            raise ValueError("DocChat not initialized. Set up the application first.")
-            
-        self.doc_chat.reset_memory()
-        print(f"Memory for session '{self.doc_chat.session_id}' has been reset.")
