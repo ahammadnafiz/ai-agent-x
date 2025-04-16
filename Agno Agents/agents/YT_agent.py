@@ -65,6 +65,6 @@ youtube_agent = Agent(
 # Example usage
 youtube_agent.print_response(
     
-    "Break down this topic in easy way https://www.youtube.com/watch?v=3IdvoI8O9hU then create a study guide with timestamps., explain me the core concepts and key takeaways., How it works, when to apply, Intuitive examples, and practical applications.",
+    "Break down this topic in easy way https://www.youtube.com/watch?v=KzJORp8bgqs then create a study guide with timestamps., explain me the core concepts and key takeaways., How it works, when to apply, Intuitive examples, and practical applications.",
     stream=True,
 )

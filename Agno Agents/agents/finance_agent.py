@@ -63,7 +63,6 @@ finance_agent = Agent(
     markdown=True,
 )
 
-
 # Semiconductor market analysis example
 finance_agent.print_response(
     dedent("""\
